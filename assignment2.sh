@@ -1,88 +1,69 @@
 #!/bin/bash
+set -euo pipefail
 
-# Display message 
-display_message() {
-    echo "-----------------------------------------------------"
-    echo ">> $1"
-    echo "-----------------------------------------------------"
+# Log messages
+log() {
+    echo "[INFO] $1"
 }
 
-# Server configuration
-display_message "Initializing Server Configuration"
+# Check if running as root
+if [[ $EUID -ne 0 ]]; then
+    log "This script must be run as root."
+    exit 1
+fi
 
-# Update system and install packages
-display_message "Updating system and installing necessary packages"
-sudo apt update
-sudo apt upgrade -y
-sudo apt install -y apache2 squid ufw
-
-# Network interface config
-display_message "Configuring network interface"
-cat << EOF > /etc/netplan/01-netcfg.yaml
+# Update netplan configuration 
+cat <<EOF > /etc/netplan/01-netcfg.yaml
 network:
   version: 2
   renderer: networkd
   ethernets:
-    ens3:
+    enp0s8:  #
       addresses:
         - 192.168.16.21/24
       gateway4: 192.168.16.2
       nameservers:
-        addresses: [192.168.16.2]
-        search: [home.arpa, localdomain]
+        addresses:
+          - 192.168.16.2
+      routes:
+        - to: 0.0.0.0/0
+          via: 192.168.16.2
 EOF
-netplan apply
 
-# Update /etc/hosts file
-display_message "Updating /etc/hosts file"
-sudo sed -i '/192.168.16.21/s/^/#/' /etc/hosts
-sudo bash -c 'echo "192.168.16.21    server1" >> /etc/hosts'
+# Update /etc/hosts
+sed -i '/192.168.16.21/d' /etc/hosts
+echo "192.168.16.21 server1" >> /etc/hosts
 
-# Configure firewall with UFW
-display_message "Configuring firewall with UFW"
-sudo ufw allow ssh
-sudo ufw allow http
-sudo ufw allow from 192.168.16.0/24 to any port 3128 # squid proxy
-sudo ufw --force enable
+# Enable UFW
+ufw enable
 
-# Create user accounts and configure SSH keys
-display_message "Creating user accounts and configuring SSH keys"
-declare -A users=(
-    ["dennis"]="ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIG4rT3vTt99Ox5kndS4HmgTrKBT8SKzhK4rhGkEVGlCI student@generic-vm"
-    ["aubrey"]=""
-    ["captain"]=""
-    ["snibbles"]=""
-    ["brownie"]=""
-    ["scooter"]=""
-    ["sandy"]=""
-    ["perrier"]=""
-    ["cindy"]=""
-    ["tiger"]=""
-    ["yoda"]=""
-)
+# Allow SSH on the mgmt network
+ufw allow in on mgmt to any port 22
 
-for username in "${!users[@]}"; do
-    display_message "Creating user: $username"
-    if ! id "$username" &>/dev/null; then
-        sudo useradd -m -s /bin/bash "$username"
-        if [[ -n "${users[$username]}" ]]; then
-            sudo mkdir -p /home/$username/.ssh
-            sudo bash -c "echo '${users[$username]}' >> /home/$username/.ssh/authorized_keys"
-            sudo chown -R $username:$username /home/$username/.ssh
-            sudo chmod 700 /home/$username/.ssh
-            sudo chmod 600 /home/$username/.ssh/authorized_keys
-        fi
-        if [[ "$username" == "dennis" ]]; then
-            sudo usermod -aG sudo $username
-        fi
-    else
-        echo "User $username already exists."
-    fi
+# Allow HTTP on both interfaces
+ufw allow http
+
+# Allow web proxy on both interfaces
+ufw allow 8080
+
+# Create user accounts
+users=("dennis" "aubrey" "captain" "snibbles" "brownie" "scooter" "sandy" "perrier" "cindy" "tiger" "yoda")
+for user in "${users[@]}"; do
+    adduser --disabled-password --gecos "" "$user"
+    usermod -s /bin/bash "$user"
+    mkdir -p "/home/$user/.ssh"
+    echo "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIG4rT3vTt99Ox5kndS4HmgTrKBT8SKzhK4rhGkEVGlCI student@generic-vm" >> "/home/$user/.ssh/authorized_keys"
+    chown -R "$user:$user" "/home/$user/.ssh"
 done
 
-# Restart services
-display_message "Restarting services"
-sudo systemctl restart apache2 squid
+# Grant sudo access to dennis
+usermod -aG sudo dennis
 
-# Display completion message
-display_message "Server configuration completed successfully"
+# Install apache2
+apt-get update
+apt-get install -y apache2
+systemctl start apache2
+systemctl enable apache2
+
+# Report completion
+log "Configuration and software installation completed successfully."
